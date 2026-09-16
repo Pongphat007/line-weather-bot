@@ -256,8 +256,8 @@ async function ensureWeatherUsersSheet(sheets, sheetId) {
 /** โหลดผู้ใช้แจ้งอากาศจากแท็บ users ใน Google Sheet */
 async function loadWeatherUsers() {
   const { sheetId, sheets } = createSheetsClient();
-  await ensureWeatherUsersSheet(sheets, sheetId);
 
+  // อ่านอย่างเดียวตอนโหลด — ไม่สร้างแท็บ (สร้างตอน save เมื่อมีสิทธิ์ Editor)
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
     range: `${WEATHER_USERS_SHEET}!A:E`,
@@ -267,7 +267,7 @@ async function loadWeatherUsers() {
   const users = {};
   for (let i = 1; i < rows.length; i += 1) {
     const [userId, lat, lng, address, updatedAt] = rows[i];
-    if (!userId) continue;
+    if (!userId || userId === 'userId') continue;
     const latN = Number(lat);
     const lngN = Number(lng);
     if (Number.isNaN(latN) || Number.isNaN(lngN)) continue;

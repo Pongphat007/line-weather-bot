@@ -1,0 +1,25 @@
+{
+  "name": "line-weather-bot",
+  "version": "1.0.0",
+  "description": "LINE Bot แจ้งอุณหภูมิและความชื้นทุกชั่วโมงตามตำแหน่งที่ผู้ใช้แชร์",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "line-bot",
+    "weather",
+    "openweathermap"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@line/bot-sdk": "^11.2.0",
+    "axios": "^1.11.0",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "node-cron": "^4.2.1"
+  }
+}

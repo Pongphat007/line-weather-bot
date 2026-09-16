@@ -6,6 +6,11 @@ const express = require('express');
 const axios = require('axios');
 const cron = require('node-cron');
 const { messagingApi, middleware, HTTPFetchError } = require('@line/bot-sdk');
+const {
+  fetchRunScheduleSheet,
+  todayInBangkok,
+  matchRunnerName,
+} = require('./googleSheets');
 
 // --- ตรวจว่ามีค่า env ที่จำเป็นครบ ---
 const {
@@ -45,6 +50,152 @@ function loadUsers() {
 
 function saveUsers(users) {
   fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+}
+
+// ========== ตารางวิ่ง (Google Sheet) ==========
+
+/** แปลง YYYY-MM-DD เป็นข้อความวันที่ไทยสั้น ๆ */
+function formatThaiDate(yyyyMmDd) {
+  const [y, m, d] = yyyyMmDd.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  return date.toLocaleDateString('th-TH', {
+    timeZone: 'Asia/Bangkok',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+/** สร้างข้อความตารางวิ่งคนเดียว (ตอบเมื่อพิมพ์ "<ชื่อ>วิ่ง") */
+function formatRunMessage(name, dateKey, scheduleText, eventName) {
+  const lines = [
+    `🏃 ตารางวิ่งของ ${name} วันนี้ (${formatThaiDate(dateKey)})`,
+    `📋 ${scheduleText}`,
+  ];
+  if (eventName) {
+    lines.push(`🎽 งานวิ่ง: ${eventName}`);
+  }
+  return lines.join('\n');
+}
+
+/** สร้างข้อความรวมตารางวิ่งทุกคนสำหรับ cron ตี 5 */
+function formatAllRunnersMessage(dateKey, day, runnerNames) {
+  const lines = [`🏃 ตารางวิ่งวันนี้ (${formatThaiDate(dateKey)})`];
+
+  if (day.eventName) {
+    lines.push(`🎽 งานวิ่ง: ${day.eventName}`);
+  }
+
+  let hasAny = false;
+  for (const name of runnerNames) {
+    const scheduleText = day.schedules?.[name];
+    if (!scheduleText) continue;
+    hasAny = true;
+    lines.push('');
+    lines.push(`👤 ${name}`);
+    lines.push(`📋 ${scheduleText}`);
+  }
+
+  if (!hasAny) return null;
+  return lines.join('\n');
+}
+
+/**
+ * ลองจับข้อความแบบ "<ชื่อ>วิ่ง"
+ * คืน { handled: true } ถ้าตอบไปแล้ว
+ * คืน { handled: false } ถ้าไม่ใช่คำสั่งวิ่ง หรือชื่อไม่ตรง header → ปล่อยให้ handler อื่นจัดการ
+ */
+async function tryHandleRunQuery(replyToken, text) {
+  const match = text.trim().match(/^(.+?)\s*วิ่ง\s*$/u);
+  if (!match) {
+    return { handled: false };
+  }
+
+  const queryName = match[1].trim();
+  if (!queryName) {
+    return { handled: false };
+  }
+
+  let sheet;
+  try {
+    sheet = await fetchRunScheduleSheet();
+  } catch (err) {
+    console.error('[run] ดึง Google Sheet ไม่สำเร็จ:', err.message || err);
+    await replyText(replyToken, 'ตอนนี้ดึงข้อมูลตารางวิ่งไม่ได้ ลองใหม่อีกครั้งครับ');
+    return { handled: true };
+  }
+
+  const runnerName = matchRunnerName(queryName, sheet.runnerNames);
+  // ชื่อไม่ตรง header ใด ๆ → ไม่ตอบ ปล่อยผ่าน
+  if (!runnerName) {
+    return { handled: false };
+  }
+
+  const dateKey = todayInBangkok();
+  const day = sheet.byDate[dateKey];
+  const scheduleText = day?.schedules?.[runnerName];
+
+  if (!scheduleText) {
+    await replyText(replyToken, `วันนี้ยังไม่มีตารางวิ่งของ ${runnerName} ครับ 😴`);
+    return { handled: true };
+  }
+
+  await replyText(
+    replyToken,
+    formatRunMessage(runnerName, dateKey, scheduleText, day.eventName || '')
+  );
+  return { handled: true };
+}
+
+/**
+ * Cron 05:00 — สร้างข้อความรวมทุกคน แล้ว push หาผู้ใช้ที่สมัครแจ้งเตือน
+ * (ชุดเดียวกับ users.json ของแจ้งอากาศ) ไม่แยกส่งรายคน
+ */
+async function sendDailyRunSchedules() {
+  const users = loadUsers();
+  const userIds = Object.keys(users);
+
+  if (userIds.length === 0) {
+    console.log('[cron-run] ไม่มีผู้ใช้ในรายการแจ้งเตือน');
+    return;
+  }
+
+  let sheet;
+  try {
+    sheet = await fetchRunScheduleSheet();
+  } catch (err) {
+    console.error('[cron-run] ดึง Google Sheet ไม่สำเร็จ:', err.message || err);
+    return;
+  }
+
+  const dateKey = todayInBangkok();
+  const day = sheet.byDate[dateKey];
+
+  if (!day) {
+    console.log(`[cron-run] ไม่มีแถววันที่ ${dateKey} ในชีท`);
+    return;
+  }
+
+  const text = formatAllRunnersMessage(dateKey, day, sheet.runnerNames);
+  if (!text) {
+    console.log(`[cron-run] วันนี้ยังไม่มีตารางวิ่งของใครเลย (${dateKey})`);
+    return;
+  }
+
+  console.log(`[cron-run] เริ่มส่งตารางวิ่งรวมให้ผู้ใช้ ${userIds.length} คน`);
+
+  for (const userId of userIds) {
+    try {
+      await client.pushMessage({
+        to: userId,
+        messages: [{ type: 'text', text }],
+      });
+      console.log(`[cron-run] ส่งสำเร็จ → ${userId}`);
+    } catch (err) {
+      // ดัก error คนละคน ไม่ให้กระทบคนอื่น
+      console.error(`[cron-run] ส่งไม่สำเร็จ → ${userId}:`, err.message || err);
+    }
+  }
 }
 
 // ========== OpenWeatherMap ==========
@@ -122,6 +273,13 @@ async function handleEvent(event) {
   const replyToken = event.replyToken;
   const users = loadUsers();
 
+  // log userId ไว้ดูตอน debug (ไม่จำเป็นต่อตารางวิ่งแล้ว)
+  if (event.message.type === 'text') {
+    console.log(`[webhook] userId=${userId} text=${event.message.text}`);
+  } else {
+    console.log(`[webhook] userId=${userId} type=${event.message.type}`);
+  }
+
   // ผู้ใช้แชร์ตำแหน่งที่ตั้ง
   if (event.message.type === 'location') {
     const { latitude, longitude, address } = event.message;
@@ -156,6 +314,12 @@ async function handleEvent(event) {
       return;
     }
 
+    // ตารางวิ่ง: "<ชื่อ>วิ่ง" — ถ้าชื่อไม่ตรง header จะปล่อยผ่านไป handler อากาศด้านล่าง
+    const runResult = await tryHandleRunQuery(replyToken, text);
+    if (runResult.handled) {
+      return;
+    }
+
     // ยังไม่เคยแชร์ location
     if (!users[userId]) {
       await replyText(
@@ -168,7 +332,7 @@ async function handleEvent(event) {
     // มีตำแหน่งแล้ว — ตอบสถานะสั้น ๆ
     await replyText(
       replyToken,
-      'คุณสมัครรับแจ้งเตือนอยู่แล้ว ✓\nจะส่งสรุปอากาศทุกชั่วโมงตามตำแหน่งที่แชร์ไว้\n\nพิมพ์ "หยุด" หากต้องการยกเลิก'
+      'คุณสมัครรับแจ้งเตือนอยู่แล้ว ✓\nจะส่งสรุปอากาศทุกชั่วโมงตามตำแหน่งที่แชร์ไว้\n\nพิมพ์ "หยุด" หากต้องการยกเลิก\nพิมพ์ "<ชื่อ>วิ่ง" เช่น "จ๋าวิ่ง" เพื่อดูตารางวิ่งวันนี้'
     );
   }
 }
@@ -227,6 +391,17 @@ cron.schedule(
   { timezone: 'Asia/Bangkok' }
 );
 
+// แจ้งตารางวิ่งทุกวันตี 5 (Asia/Bangkok) — ตั้ง timezone ชัดเจนแม้เซิร์ฟเวอร์ไม่ใช่เวลาไทย
+cron.schedule(
+  '0 5 * * *',
+  () => {
+    sendDailyRunSchedules().catch((err) => {
+      console.error('[cron-run] เกิดข้อผิดพลาดที่ไม่คาดคิด:', err);
+    });
+  },
+  { timezone: 'Asia/Bangkok' }
+);
+
 // ========== Express + Webhook ==========
 
 const app = express();
@@ -250,6 +425,20 @@ app.get('/cron/weather', async (req, res) => {
   }
 });
 
+// endpoint สำรองให้ cron ภายนอกเรียกแจ้งตารางวิ่ง (กรณี free tier sleep พลาด node-cron ตี 5)
+app.get('/cron/runs', async (req, res) => {
+  if (!CRON_SECRET || req.query.secret !== CRON_SECRET) {
+    return res.status(401).send('unauthorized');
+  }
+  try {
+    await sendDailyRunSchedules();
+    res.status(200).send('ok');
+  } catch (err) {
+    console.error('[cron-run-http] ล้มเหลว:', err);
+    res.status(500).send('error');
+  }
+});
+
 // ตอบ 200 ทันทีก่อนประมวลผล event เพื่อกัน LINE timeout
 // middleware ของ @line/bot-sdk จะ verify signature ด้วย Channel Secret ให้
 app.post('/webhook', middleware({ channelSecret: LINE_CHANNEL_SECRET }), (req, res) => {
@@ -264,4 +453,5 @@ app.post('/webhook', middleware({ channelSecret: LINE_CHANNEL_SECRET }), (req, r
 app.listen(PORT, () => {
   console.log(`🚀 line-weather-bot ทำงานที่พอร์ต ${PORT}`);
   console.log('⏰ Cron แจ้งอากาศทุกชั่วโมง (นาทีที่ 0, Asia/Bangkok)');
+  console.log('🏃 Cron แจ้งตารางวิ่งทุกวัน 05:00 (Asia/Bangkok)');
 });

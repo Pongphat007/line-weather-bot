@@ -1,7 +1,7 @@
 # line-weather-bot
 
-LINE Bot แจ้งอุณหภูมิและความชื้นทุกชั่วโมง ตามตำแหน่งที่ผู้ใช้แชร์ผ่าน LINE  
-ใช้ Node.js + Express + OpenWeatherMap + `@line/bot-sdk`
+LINE Bot แจ้งอุณหภูมิ/ความชื้นทุกชั่วโมง และแจ้งตารางวิ่งประจำวันจาก Google Sheet  
+ใช้ Official Account ตัวเดียว · Node.js + Express + OpenWeatherMap + Google Sheets + `@line/bot-sdk`
 
 ---
 
@@ -46,7 +46,47 @@ LINE Bot แจ้งอุณหภูมิและความชื้น�
 
 ---
 
-## 5) รันในเครื่อง
+## 5) ตั้งค่า Google Sheet สำหรับตารางวิ่ง
+
+### โครงสร้างคอลัมน์
+
+| A: Date | B: งานวิ่ง | C / D / … (ชื่อคน) |
+|---------|------------|---------------------|
+| `YYYY-MM-DD` | ชื่องานแข่งของวันนั้น (ว่างได้) | ตารางวิ่งของคนนั้นในวันนั้น |
+
+ตัวอย่าง:
+
+| Date | งานวิ่ง | จ๋า | นิว |
+|------|--------|-----|-----|
+| 2026-09-16 | ATM | 5K easy @ 6:00 | 10K tempo |
+| 2026-09-17 | | Rest | 8K easy |
+
+- คอลัมน์ A และ B ตำแหน่งตายตัว
+- คอลัมน์คนวิ่งอ่านจาก **header แถวแรกแบบ dynamic** — เพิ่มคนใหม่ได้โดยเพิ่มคอลัมน์ใหม่
+
+### สร้าง Service Account + เปิด Sheets API
+
+1. เปิด [Google Cloud Console](https://console.cloud.google.com/)
+2. สร้างโปรเจกต์ (หรือเลือกโปรเจกต์ที่มีอยู่)
+3. เปิด **APIs & Services → Library** → ค้นหา **Google Sheets API** → **Enable**
+4. ไป **APIs & Services → Credentials → Create credentials → Service account**
+5. สร้าง Service Account เสร็จแล้วกดเข้าไปที่บัญชีนั้น → แท็บ **Keys → Add key → Create new key → JSON**
+6. เปิดไฟล์ JSON ที่ดาวน์โหลด แล้วนำค่าไปใส่ `.env`:
+   - `client_email` → `GOOGLE_SERVICE_ACCOUNT_EMAIL`
+   - `private_key` → `GOOGLE_PRIVATE_KEY` (ใน `.env` ใส่บรรทัดเดียว ใช้ `\n` แทนขึ้นบรรทัดใหม่)
+7. เปิด Google Sheet → ปุ่ม **Share** → ใส่ email ของ Service Account เป็น **Viewer**
+
+### หา Sheet ID จาก URL
+
+จาก URL แบบ:
+
+`https://docs.google.com/spreadsheets/d/1AbCDefGHijKLmnopQRstuVWxyz/edit`
+
+ส่วน `1AbCDefGHijKLmnopQRstuVWxyz` คือ `GOOGLE_SHEET_ID`
+
+---
+
+## 6) รันในเครื่อง
 
 ```bash
 npm install
@@ -60,61 +100,72 @@ Webhook path คือ `POST /webhook`
 
 ---
 
-## 6) ทดสอบด้วย ngrok + ตั้งค่า Webhook URL
+## 7) ทดสอบด้วย ngrok + ตั้งค่า Webhook URL
 
 LINE ต้องเรียก webhook ผ่าน public HTTPS URL
 
 ```bash
-# ติดตั้ง ngrok แล้วรัน (สมมติบอทรันพอร์ต 3000)
 ngrok http 3000
 ```
 
-คัดลอก URL แบบ HTTPS เช่น `https://xxxx.ngrok-free.app`  
-แล้วตั้งใน LINE Developers Console:
+ตั้งใน LINE Developers Console:
 
-- **Messaging API → Webhook URL** = `https://xxxx.ngrok-free.app/webhook`
-- กด **Verify** ให้ผ่าน
-- เปิด **Use webhook**
+- **Webhook URL** = `https://xxxx.ngrok-free.app/webhook`
+- กด **Verify** → เปิด **Use webhook**
 
-จากนั้นเพิ่มเพื่อนบัญชี LINE OA แล้วลอง:
+ทดสอบ:
 
-1. แชร์ **ตำแหน่งที่ตั้ง** (📎 → ตำแหน่งที่ตั้ง) → บอทยืนยันการบันทึก
-2. พิมพ์ข้อความทั่วไปก่อนแชร์ตำแหน่ง → ได้คำแนะนำ
-3. พิมพ์ `หยุด` หรือ `unsubscribe` → ยกเลิกการแจ้งเตือน
-
-Cron จะส่งสรุปอากาศทุกชั่วโมง ที่นาทีที่ 0 (เวลา `Asia/Bangkok`)
+1. แชร์ตำแหน่ง → ยืนยันบันทึก (สมัครรับทั้งอากาศ + ตารางวิ่งตี 5)
+2. พิมพ์ `จ๋าวิ่ง` → ได้ตารางวิ่งวันนี้ของจ๋า (ถ้ามีในชีท)
+3. พิมพ์ `หยุด` → ยกเลิกแจ้งเตือน
 
 ---
 
-## 7) Deploy ขึ้น Render.com หรือ Railway.app (free tier)
+## 8) Cron และ timezone
 
-### Render.com
+| Job | เวลา | timezone | ส่งหาใคร |
+|-----|------|----------|----------|
+| แจ้งอากาศ | ทุกชั่วโมง นาทีที่ 0 | `Asia/Bangkok` | ผู้ใช้ที่แชร์ตำแหน่งไว้ |
+| แจ้งตารางวิ่ง | ทุกวัน 05:00 | `Asia/Bangkok` | **ชุดเดียวกัน** — ข้อความรวมทุกคนในชีท |
+
+ตัวอย่างข้อความตอนตี 5:
+
+```text
+🏃 ตารางวิ่งวันนี้ (16 ก.ย. 2569)
+🎽 งานวิ่ง: ATM
+
+👤 จ๋า
+📋 5K easy @ 6:00
+
+👤 นิว
+📋 10K tempo
+```
+
+โค้ดใช้ `node-cron` พร้อม `{ timezone: 'Asia/Bangkok' }`  
+แม้เซิร์ฟเวอร์ใช้ UTC ก็ยังยิงตามเวลาไทยถูกต้อง
+
+บน **Render free tier** แนะนำตั้ง [cron-job.org](https://cron-job.org):
+
+- ปลุกเครื่อง: `GET /` ทุก 10 นาที
+- อากาศ: `GET /cron/weather?secret=...` ทุกชั่วโมง
+- ตารางวิ่ง: `GET /cron/runs?secret=...` เวลา 05:00 ไทย
+
+---
+
+## 9) Deploy ขึ้น Render.com หรือ Railway.app (free tier)
 
 1. Push โปรเจกต์ขึ้น GitHub (อย่า commit `.env`)
-2. สร้าง **Web Service** ใหม่จาก repo
-3. Runtime: Node  
-   - Build: `npm install`  
-   - Start: `npm start`
-4. ใส่ Environment Variables ตาม `.env.example`
-5. หลังได้ URL เช่น `https://your-app.onrender.com`  
-   ตั้ง Webhook เป็น `https://your-app.onrender.com/webhook`
-
-> หมายเหตุ free tier ของ Render อาจ sleep เมื่อไม่มีทราฟฟิก ทำให้ cron พลาดได้ — เหมาะทดสอบ หรืออัปเกรด/ใช้ keep-alive ตามความเหมาะสม
-
-### Railway.app
-
-1. New Project → Deploy from GitHub repo
-2. ใส่ Environment Variables ให้ครบ
-3. Start command: `npm start`
-4. คัดลอก public URL แล้วตั้ง Webhook เป็น `https://your-domain/webhook`
+2. สร้าง Web Service จาก repo → Start: `npm start`
+3. ใส่ Environment Variables ตาม `.env.example` (รวม Google Sheets)
+4. ตั้ง Webhook เป็น `https://your-app.onrender.com/webhook`
 
 ---
 
-## 8) คำเตือนเรื่องความปลอดภัย
+## 10) คำเตือนเรื่องความปลอดภัย
 
-- **ห้าม commit ไฟล์ `.env` เข้า git** — มี token/key ที่ใช้ควบคุมบอทและเรียก API ได้
-- โปรเจกต์นี้มี `.gitignore` ที่ exclude `.env`, `node_modules`, และ `users.json` อยู่แล้ว
-- ถ้า token หลุด ให้ revoke / issue token ใหม่ทันทีที่ LINE Developers Console และ OpenWeatherMap
+- **ห้าม commit ไฟล์ `.env` เข้า git**
+- `.gitignore` exclude `.env`, `node_modules`, `users.json` อยู่แล้ว
+- ถ้า key หลุด ให้ revoke / ออก key ใหม่ทันที
 
 ---
 
@@ -122,15 +173,15 @@ Cron จะส่งสรุปอากาศทุกชั่วโมง �
 
 | ไฟล์ | คำอธิบาย |
 |------|----------|
-| `server.js` | Webhook + cron + อ่าน/เขียน `users.json` |
-| `package.json` | dependencies |
+| `server.js` | Webhook + cron อากาศ + cron ตารางวิ่ง |
+| `googleSheets.js` | อ่าน/parse Google Sheet |
+| `users.json` | ผู้ใช้ที่สมัครแจ้งเตือน (ไม่ commit) |
 | `.env.example` | ตัวอย่างตัวแปรสภาพแวดล้อม |
-| `users.json` | สร้างอัตโนมัติเมื่อมีผู้ใช้แชร์ตำแหน่ง (ไม่ commit) |
 
 ## คำสั่งที่ใช้บ่อย
 
 | คำสั่งผู้ใช้ | ผลลัพธ์ |
 |-------------|---------|
-| แชร์ Location | บันทึก lat/lng แล้วเริ่มแจ้งทุกชั่วโมง |
-| ข้อความทั่วไป (ยังไม่มีตำแหน่ง) | แนะนำวิธีแชร์ตำแหน่ง |
-| `หยุด` / `unsubscribe` | ลบออกจากรายการแจ้งเตือน |
+| แชร์ Location | สมัครรับอากาศทุกชั่วโมง + ตารางวิ่งรวมทุกวันตี 5 |
+| `<ชื่อ>วิ่ง` เช่น `จ๋าวิ่ง` | ตอบตารางวิ่งวันนี้ของคนนั้น |
+| `หยุด` / `unsubscribe` | ยกเลิกการแจ้งเตือนทั้งหมด |

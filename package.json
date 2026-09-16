@@ -1,7 +1,7 @@
 {
   "name": "line-weather-bot",
   "version": "1.0.0",
-  "description": "LINE Bot แจ้งอุณหภูมิและความชื้นทุกชั่วโมงตามตำแหน่งที่ผู้ใช้แชร์",
+  "description": "LINE Bot แจ้งอากาศรายชั่วโมงและตารางวิ่งประจำวันจาก Google Sheet",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -12,7 +12,8 @@
   "keywords": [
     "line-bot",
     "weather",
-    "openweathermap"
+    "openweathermap",
+    "google-sheets"
   ],
   "license": "MIT",
   "dependencies": {
@@ -20,6 +21,7 @@
     "axios": "^1.11.0",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
+    "googleapis": "^156.0.0",
     "node-cron": "^4.2.1"
   }
 }

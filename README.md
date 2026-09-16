@@ -75,7 +75,8 @@ LINE Bot แจ้งอุณหภูมิ/ความชื้นทุก�
 6. เปิดไฟล์ JSON ที่ดาวน์โหลด แล้วนำค่าไปใส่ `.env`:
    - `client_email` → `GOOGLE_SERVICE_ACCOUNT_EMAIL`
    - `private_key` → `GOOGLE_PRIVATE_KEY` (ใน `.env` ใส่บรรทัดเดียว ใช้ `\n` แทนขึ้นบรรทัดใหม่)
-7. เปิด Google Sheet → ปุ่ม **Share** → ใส่ email ของ Service Account เป็น **Viewer**
+7. เปิด Google Sheet → ปุ่ม **Share** → ใส่ email ของ Service Account เป็น **Editor**
+   (ต้องเป็น Editor เพราะบอทจะสร้างแท็บ `users` เพื่อเก็บผู้ใช้แจ้งอากาศ — Viewer อ่านตารางวิ่งได้อย่างเดียว)
 
 ### หา Sheet ID จาก URL
 

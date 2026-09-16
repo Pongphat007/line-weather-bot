@@ -16,7 +16,8 @@ function createSheetsClient() {
   const auth = new google.auth.JWT({
     email,
     key: privateKey,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    // ใช้สิทธิ์อ่าน/เขียน — แท็บ users ต้องบันทึกผู้ใช้แจ้งอากาศ (แชร์ชีทเป็น Editor)
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 
   return {
@@ -220,4 +221,91 @@ module.exports = {
   normalizeDate,
   parseRunQuery,
   dateKeyInCurrentWeek,
+  loadWeatherUsers,
+  saveWeatherUsers,
 };
+
+/** ชื่อแท็บเก็บผู้ใช้แจ้งอากาศ (สร้างอัตโนมัติถ้ายังไม่มี) */
+const WEATHER_USERS_SHEET = process.env.GOOGLE_USERS_SHEET || 'users';
+
+/** สร้างแท็บ users พร้อม header ถ้ายังไม่มี */
+async function ensureWeatherUsersSheet(sheets, sheetId) {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
+  const existing = (meta.data.sheets || []).find(
+    (s) => s.properties?.title === WEATHER_USERS_SHEET
+  );
+
+  if (!existing) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: sheetId,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: WEATHER_USERS_SHEET } } }],
+      },
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: `${WEATHER_USERS_SHEET}!A1:E1`,
+      valueInputOption: 'RAW',
+      requestBody: {
+        values: [['userId', 'lat', 'lng', 'address', 'updatedAt']],
+      },
+    });
+  }
+}
+
+/** โหลดผู้ใช้แจ้งอากาศจากแท็บ users ใน Google Sheet */
+async function loadWeatherUsers() {
+  const { sheetId, sheets } = createSheetsClient();
+  await ensureWeatherUsersSheet(sheets, sheetId);
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${WEATHER_USERS_SHEET}!A:E`,
+  });
+
+  const rows = res.data.values || [];
+  const users = {};
+  for (let i = 1; i < rows.length; i += 1) {
+    const [userId, lat, lng, address, updatedAt] = rows[i];
+    if (!userId) continue;
+    const latN = Number(lat);
+    const lngN = Number(lng);
+    if (Number.isNaN(latN) || Number.isNaN(lngN)) continue;
+    users[userId] = {
+      lat: latN,
+      lng: lngN,
+      address: address || null,
+      updatedAt: updatedAt || null,
+    };
+  }
+  return users;
+}
+
+/** บันทึกผู้ใช้แจ้งอากาศทั้งก้อนลงแท็บ users (ทับข้อมูลเดิม) */
+async function saveWeatherUsers(users) {
+  const { sheetId, sheets } = createSheetsClient();
+  await ensureWeatherUsersSheet(sheets, sheetId);
+
+  const values = [['userId', 'lat', 'lng', 'address', 'updatedAt']];
+  for (const [userId, info] of Object.entries(users || {})) {
+    values.push([
+      userId,
+      info.lat,
+      info.lng,
+      info.address || '',
+      info.updatedAt || '',
+    ]);
+  }
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: sheetId,
+    range: `${WEATHER_USERS_SHEET}!A:E`,
+  });
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${WEATHER_USERS_SHEET}!A1`,
+    valueInputOption: 'RAW',
+    requestBody: { values },
+  });
+}

@@ -12,6 +12,8 @@ const {
   matchRunnerName,
   parseRunQuery,
   dateKeyInCurrentWeek,
+  loadWeatherUsers,
+  saveWeatherUsers,
 } = require('./googleSheets');
 
 // --- ตรวจว่ามีค่า env ที่จำเป็นครบ ---
@@ -35,23 +37,65 @@ const client = new messagingApi.MessagingApiClient({
 
 const USERS_FILE = path.join(__dirname, 'users.json');
 
-// ========== จัดการไฟล์ users.json ==========
+// ========== ผู้ใช้แจ้งอากาศ (เก็บถาวรใน Google Sheet แท็บ users) ==========
 
-function loadUsers() {
+/** โหลดผู้ใช้ — Google Sheet เป็นหลัก, แล้ว WEATHER_USERS_JSON, แล้วไฟล์ท้องถิ่น */
+async function loadUsers() {
+  // 1) Google Sheet แท็บ users
   try {
-    if (!fs.existsSync(USERS_FILE)) {
-      return {};
+    const fromSheet = await loadWeatherUsers();
+    if (Object.keys(fromSheet).length > 0) {
+      return fromSheet;
     }
-    const raw = fs.readFileSync(USERS_FILE, 'utf8');
-    return JSON.parse(raw || '{}');
   } catch (err) {
-    console.error('อ่าน users.json ไม่สำเร็จ:', err.message);
+    console.error('อ่านผู้ใช้จาก Google Sheet ไม่สำเร็จ:', err.message);
+  }
+
+  // 2) Environment (ใช้บน Render ถ้ายังแชร์ Sheet เป็น Viewer อยู่)
+  if (process.env.WEATHER_USERS_JSON) {
+    try {
+      const fromEnv = JSON.parse(process.env.WEATHER_USERS_JSON);
+      if (fromEnv && typeof fromEnv === 'object') {
+        return fromEnv;
+      }
+    } catch (err) {
+      console.error('parse WEATHER_USERS_JSON ไม่สำเร็จ:', err.message);
+    }
+  }
+
+  // 3) ไฟล์ท้องถิ่น
+  try {
+    if (!fs.existsSync(USERS_FILE)) return {};
+    return JSON.parse(fs.readFileSync(USERS_FILE, 'utf8') || '{}');
+  } catch (fileErr) {
+    console.error('อ่าน users.json ไม่สำเร็จ:', fileErr.message);
     return {};
   }
 }
 
-function saveUsers(users) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+/** บันทึกผู้ใช้ลง Google Sheet (+ สำรองไฟล์ท้องถิ่น) */
+async function saveUsers(users) {
+  try {
+    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+  } catch (err) {
+    console.error('สำรอง users.json ไม่สำเร็จ:', err.message);
+  }
+
+  try {
+    await saveWeatherUsers(users);
+  } catch (err) {
+    console.error('บันทึกผู้ใช้ลง Google Sheet ไม่สำเร็จ:', err.message);
+    // ไม่ throw — ยังมีไฟล์สำรอง / WEATHER_USERS_JSON; แจ้งใน reply ตอนแชร์ location แทน
+    const perm = /permission|insufficient|403/i.test(err.message || '');
+    if (perm) {
+      const e = new Error(
+        'Service Account ยังไม่มีสิทธิ์เขียนชีท — แชร์ชีทเป็น Editor แล้วลองใหม่'
+      );
+      e.code = 'SHEET_WRITE_DENIED';
+      throw e;
+    }
+    throw err;
+  }
 }
 
 // ========== ตารางวิ่ง (Google Sheet) ==========
@@ -143,7 +187,7 @@ async function tryHandleRunQuery(replyToken, text) {
  * (ชุดเดียวกับ users.json ของแจ้งอากาศ) ไม่แยกส่งรายคน
  */
 async function sendDailyRunSchedules() {
-  const users = loadUsers();
+  const users = await loadUsers();
   const userIds = Object.keys(users);
 
   if (userIds.length === 0) {
@@ -257,7 +301,7 @@ async function handleEvent(event) {
 
   const userId = event.source.userId;
   const replyToken = event.replyToken;
-  const users = loadUsers();
+  const users = await loadUsers();
 
   // log userId ไว้ดูตอน debug (ไม่จำเป็นต่อตารางวิ่งแล้ว)
   if (event.message.type === 'text') {
@@ -276,12 +320,19 @@ async function handleEvent(event) {
       address: address || null,
       updatedAt: new Date().toISOString(),
     };
-    saveUsers(users);
-
-    await replyText(
-      replyToken,
-      '✅ บันทึกตำแหน่งของคุณเรียบร้อยแล้ว\nจะเริ่มแจ้งอุณหภูมิและความชื้นทุกชั่วโมง\n\nพิมพ์ "หยุด" หรือ "unsubscribe" เมื่อต้องการยกเลิก'
-    );
+    try {
+      await saveUsers(users);
+      await replyText(
+        replyToken,
+        '✅ บันทึกตำแหน่งของคุณเรียบร้อยแล้ว\nจะเริ่มแจ้งอุณหภูมิและความชื้นทุกชั่วโมง\n\nพิมพ์ "หยุด" หรือ "unsubscribe" เมื่อต้องการยกเลิก'
+      );
+    } catch (err) {
+      console.error('บันทึกตำแหน่งล้มเหลว:', err.message);
+      await replyText(
+        replyToken,
+        '⚠️ รับตำแหน่งแล้ว แต่บันทึกลงระบบยังไม่สำเร็จ\nกรุณาแชร์ชีท Google ให้ Service Account เป็น Editor แล้วลองแชร์ตำแหน่งอีกครั้ง'
+      );
+    }
     return;
   }
 
@@ -294,7 +345,11 @@ async function handleEvent(event) {
     if (text === 'หยุด' || lower === 'unsubscribe') {
       if (users[userId]) {
         delete users[userId];
-        saveUsers(users);
+        try {
+          await saveUsers(users);
+        } catch (err) {
+          console.error('ลบผู้ใช้จาก Sheet ไม่สำเร็จ:', err.message);
+        }
       }
       await replyText(replyToken, '🛑 หยุดแจ้งเตือนแล้ว คุณจะไม่ได้รับสรุปอากาศรายชั่วโมงอีก');
       return;
@@ -326,7 +381,7 @@ async function handleEvent(event) {
 // ========== Cron: แจ้งอากาศทุกชั่วโมง ==========
 
 async function sendHourlyWeather() {
-  const users = loadUsers();
+  const users = await loadUsers();
   const userIds = Object.keys(users);
 
   if (userIds.length === 0) {
@@ -355,11 +410,15 @@ async function sendHourlyWeather() {
 
       // ลบผู้ใช้ที่บล็อกบอท / ไม่พบ (error code บ่งชี้ว่าถูกบล็อกหรือใช้งานไม่ได้)
       if (status === 403 || status === 404) {
-        const latest = loadUsers();
-        if (latest[userId]) {
-          delete latest[userId];
-          saveUsers(latest);
-          console.log(`[cron] ลบผู้ใช้ ${userId} ออกจากรายการ (status ${status})`);
+        try {
+          const latest = await loadUsers();
+          if (latest[userId]) {
+            delete latest[userId];
+            await saveUsers(latest);
+            console.log(`[cron] ลบผู้ใช้ ${userId} ออกจากรายการ (status ${status})`);
+          }
+        } catch (saveErr) {
+          console.error('[cron] ลบผู้ใช้จาก Sheet ไม่สำเร็จ:', saveErr.message);
         }
       }
     }

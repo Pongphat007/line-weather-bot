@@ -46,9 +46,20 @@ function normalizeDate(value) {
   return null;
 }
 
+/** หา index คอลัมน์จาก header (ไม่สนตัวพิมพ์เล็ก/ใหญ่ ตัดช่องว่าง) */
+function findColumnIndex(headers, aliases) {
+  const normalized = headers.map((h) => String(h || '').trim().toLowerCase());
+  for (const alias of aliases) {
+    const i = normalized.indexOf(alias.toLowerCase());
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+
 /**
  * แปลงแถวดิบจาก Sheets เป็นโครงสร้างใช้งาน
- * คอลัมน์ A = Date, B = งานวิ่ง, คอลัมน์ถัดไป = ชื่อคน (dynamic จาก header)
+ * คอลัมน์: date | งานวิ่ง | โจทย์ | หมายเหตุ | ชื่อ
+ * (หาคอลัมน์จากชื่อ header — แถวละหนึ่งคน)
  */
 function parseSheetRows(rows) {
   if (!rows || rows.length === 0) {
@@ -56,37 +67,45 @@ function parseSheetRows(rows) {
   }
 
   const headers = rows[0].map((h) => String(h || '').trim());
-  const runnerNames = [];
+  const colDate = findColumnIndex(headers, ['date', 'วันที่']);
+  const colEvent = findColumnIndex(headers, ['งานวิ่ง']);
+  const colTask = findColumnIndex(headers, ['โจทย์']);
+  const colNote = findColumnIndex(headers, ['หมายเหตุ']);
+  const colName = findColumnIndex(headers, ['ชื่อ', 'name']);
 
-  // อ่าน header คนวิ่งแบบ dynamic ตั้งแต่คอลัมน์ C เป็นต้นไป (index 2+)
-  for (let i = 2; i < headers.length; i += 1) {
-    const name = headers[i];
-    if (name) {
-      runnerNames.push({ name, colIndex: i });
-    }
+  if (colDate < 0 || colName < 0) {
+    throw new Error('ชีทต้องมีคอลัมน์ header ชื่อ "date" และ "ชื่อ"');
   }
 
   const byDate = {};
+  const nameSet = new Set();
+
   for (let r = 1; r < rows.length; r += 1) {
     const row = rows[r] || [];
-    const date = normalizeDate(row[0]);
-    if (!date) continue;
+    const date = normalizeDate(row[colDate]);
+    const name = String(row[colName] || '').trim();
+    if (!date || !name) continue;
 
-    const eventName = String(row[1] || '').trim();
-    const schedules = {};
+    nameSet.add(name);
 
-    for (const { name, colIndex } of runnerNames) {
-      const value = String(row[colIndex] || '').trim();
-      if (value) {
-        schedules[name] = value;
-      }
+    const entry = {
+      name,
+      eventName: colEvent >= 0 ? String(row[colEvent] || '').trim() : '',
+      task: colTask >= 0 ? String(row[colTask] || '').trim() : '',
+      note: colNote >= 0 ? String(row[colNote] || '').trim() : '',
+    };
+
+    // ต้องมีอย่างน้อยโจทย์ / งานวิ่ง / หมายเหตุ อย่างใดอย่างหนึ่ง
+    if (!entry.task && !entry.eventName && !entry.note) continue;
+
+    if (!byDate[date]) {
+      byDate[date] = { entries: [] };
     }
-
-    byDate[date] = { eventName, schedules };
+    byDate[date].entries.push(entry);
   }
 
   return {
-    runnerNames: runnerNames.map((r) => r.name),
+    runnerNames: [...nameSet],
     byDate,
   };
 }
@@ -113,8 +132,7 @@ function todayInBangkok() {
 }
 
 /**
- * จับคู่ชื่อจากข้อความกับ header ในชีท (exact หรือ contains, ไม่สนตัวพิมพ์)
- * คืนชื่อตาม header จริง หรือ null ถ้าไม่เจอ
+ * จับคู่ชื่อจากข้อความกับรายชื่อในชีท (exact หรือ contains, ไม่สนตัวพิมพ์)
  */
 function matchRunnerName(queryName, runnerNames) {
   const q = String(queryName || '').trim().toLowerCase();

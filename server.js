@@ -67,43 +67,36 @@ function formatThaiDate(yyyyMmDd) {
 }
 
 /** สร้างข้อความตารางวิ่งคนเดียว (ตอบเมื่อพิมพ์ "<ชื่อ>วิ่ง") */
-function formatRunMessage(name, dateKey, scheduleText, eventName) {
-  const lines = [
-    `🏃 ตารางวิ่งของ ${name} วันนี้ (${formatThaiDate(dateKey)})`,
-    `📋 ${scheduleText}`,
-  ];
-  if (eventName) {
-    lines.push(`🎽 งานวิ่ง: ${eventName}`);
-  }
+function formatRunMessage(dateKey, entry) {
+  const lines = [`🏃 ตารางวิ่งของ ${entry.name} วันนี้ (${formatThaiDate(dateKey)})`];
+  if (entry.task) lines.push(`📋 โจทย์: ${entry.task}`);
+  if (entry.eventName) lines.push(`🎽 งานวิ่ง: ${entry.eventName}`);
+  if (entry.note) lines.push(`📝 หมายเหตุ: ${entry.note}`);
   return lines.join('\n');
 }
 
 /** สร้างข้อความรวมตารางวิ่งทุกคนสำหรับ cron ตี 5 */
-function formatAllRunnersMessage(dateKey, day, runnerNames) {
+function formatAllRunnersMessage(dateKey, day) {
+  const entries = day?.entries || [];
+  if (entries.length === 0) return null;
+
   const lines = [`🏃 ตารางวิ่งวันนี้ (${formatThaiDate(dateKey)})`];
 
-  if (day.eventName) {
-    lines.push(`🎽 งานวิ่ง: ${day.eventName}`);
-  }
-
-  let hasAny = false;
-  for (const name of runnerNames) {
-    const scheduleText = day.schedules?.[name];
-    if (!scheduleText) continue;
-    hasAny = true;
+  for (const entry of entries) {
     lines.push('');
-    lines.push(`👤 ${name}`);
-    lines.push(`📋 ${scheduleText}`);
+    lines.push(`👤 ${entry.name}`);
+    if (entry.task) lines.push(`📋 โจทย์: ${entry.task}`);
+    if (entry.eventName) lines.push(`🎽 งานวิ่ง: ${entry.eventName}`);
+    if (entry.note) lines.push(`📝 หมายเหตุ: ${entry.note}`);
   }
 
-  if (!hasAny) return null;
   return lines.join('\n');
 }
 
 /**
  * ลองจับข้อความแบบ "<ชื่อ>วิ่ง"
  * คืน { handled: true } ถ้าตอบไปแล้ว
- * คืน { handled: false } ถ้าไม่ใช่คำสั่งวิ่ง หรือชื่อไม่ตรง header → ปล่อยให้ handler อื่นจัดการ
+ * คืน { handled: false } ถ้าไม่ใช่คำสั่งวิ่ง หรือชื่อไม่ตรง → ปล่อยให้ handler อื่นจัดการ
  */
 async function tryHandleRunQuery(replyToken, text) {
   const match = text.trim().match(/^(.+?)\s*วิ่ง\s*$/u);
@@ -126,24 +119,21 @@ async function tryHandleRunQuery(replyToken, text) {
   }
 
   const runnerName = matchRunnerName(queryName, sheet.runnerNames);
-  // ชื่อไม่ตรง header ใด ๆ → ไม่ตอบ ปล่อยผ่าน
+  // ชื่อไม่ตรงรายชื่อในชีท → ไม่ตอบ ปล่อยผ่าน
   if (!runnerName) {
     return { handled: false };
   }
 
   const dateKey = todayInBangkok();
   const day = sheet.byDate[dateKey];
-  const scheduleText = day?.schedules?.[runnerName];
+  const entry = day?.entries?.find((e) => e.name === runnerName);
 
-  if (!scheduleText) {
+  if (!entry) {
     await replyText(replyToken, `วันนี้ยังไม่มีตารางวิ่งของ ${runnerName} ครับ 😴`);
     return { handled: true };
   }
 
-  await replyText(
-    replyToken,
-    formatRunMessage(runnerName, dateKey, scheduleText, day.eventName || '')
-  );
+  await replyText(replyToken, formatRunMessage(dateKey, entry));
   return { handled: true };
 }
 
@@ -170,13 +160,8 @@ async function sendDailyRunSchedules() {
 
   const dateKey = todayInBangkok();
   const day = sheet.byDate[dateKey];
+  const text = formatAllRunnersMessage(dateKey, day);
 
-  if (!day) {
-    console.log(`[cron-run] ไม่มีแถววันที่ ${dateKey} ในชีท`);
-    return;
-  }
-
-  const text = formatAllRunnersMessage(dateKey, day, sheet.runnerNames);
   if (!text) {
     console.log(`[cron-run] วันนี้ยังไม่มีตารางวิ่งของใครเลย (${dateKey})`);
     return;

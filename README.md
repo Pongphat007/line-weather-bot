@@ -1,7 +1,7 @@
 # line-weather-bot
 
-LINE Bot แจ้งอุณหภูมิ/ความชื้นทุกชั่วโมง และแจ้งตารางวิ่งประจำวันจาก Google Sheet  
-ใช้ Official Account ตัวเดียว · Node.js + Express + OpenWeatherMap + Google Sheets + `@line/bot-sdk`
+LINE Bot แจ้งอุณหภูมิ/ความชื้น/**PM2.5** ทุกชั่วโมง และแจ้งตารางวิ่งประจำวันจาก Google Sheet  
+ใช้ Official Account ตัวเดียว · Node.js + Express + OpenWeatherMap (Weather + Air Pollution) + Google Sheets + `@line/bot-sdk`
 
 ---
 

@@ -242,31 +242,81 @@ function weatherEmoji(weatherId) {
   return '🌡️';
 }
 
-/** ดึงสภาพอากาศจาก lat/lng */
-async function fetchWeather(lat, lng) {
-  const url = 'https://api.openweathermap.org/data/2.5/weather';
-  const { data } = await axios.get(url, {
-    params: {
-      lat,
-      lon: lng,
-      appid: OPENWEATHER_API_KEY,
-      units: 'metric',
-      lang: 'th',
-    },
-    timeout: 10000,
-  });
+/** แปลง AQI ของ OpenWeather (1–5) เป็นข้อความภาษาไทย */
+function aqiLabel(aqi) {
+  const map = {
+    1: 'ดีมาก',
+    2: 'ดี',
+    3: 'ปานกลาง',
+    4: 'แย่',
+    5: 'แย่มาก',
+  };
+  return map[aqi] || '-';
+}
 
+/** ดึงคุณภาพอากาศ (PM2.5 / AQI) — ถ้าเรียกไม่สำเร็จคืน null ไม่ให้กระทบรายงานอากาศหลัก */
+async function fetchAirPollution(lat, lng) {
+  try {
+    const { data } = await axios.get('https://api.openweathermap.org/data/2.5/air_pollution', {
+      params: {
+        lat,
+        lon: lng,
+        appid: OPENWEATHER_API_KEY,
+      },
+      timeout: 10000,
+    });
+
+    const item = data.list?.[0];
+    if (!item) return null;
+
+    const pm25 = item.components?.pm2_5;
+    const aqi = item.main?.aqi;
+
+    return {
+      pm25: pm25 != null ? Math.round(pm25 * 10) / 10 : null,
+      aqi: aqi != null ? aqi : null,
+      aqiText: aqi != null ? aqiLabel(aqi) : null,
+    };
+  } catch (err) {
+    console.error('[air] ดึงคุณภาพอากาศไม่สำเร็จ:', err.message || err);
+    return null;
+  }
+}
+
+/** ดึงสภาพอากาศ + ฝุ่น จาก lat/lng ตามตำแหน่งที่ผู้ใช้แชร์ */
+async function fetchWeather(lat, lng) {
+  const weatherUrl = 'https://api.openweathermap.org/data/2.5/weather';
+
+  const [weatherRes, air] = await Promise.all([
+    axios.get(weatherUrl, {
+      params: {
+        lat,
+        lon: lng,
+        appid: OPENWEATHER_API_KEY,
+        units: 'metric',
+        lang: 'th',
+      },
+      timeout: 10000,
+    }),
+    fetchAirPollution(lat, lng),
+  ]);
+
+  const data = weatherRes.data;
   const weather = data.weather?.[0] || {};
+
   return {
     temp: Math.round(data.main.temp),
     feelsLike: Math.round(data.main.feels_like),
     humidity: data.main.humidity,
     description: weather.description || '-',
     emoji: weatherEmoji(weather.id),
+    pm25: air?.pm25 ?? null,
+    aqi: air?.aqi ?? null,
+    aqiText: air?.aqiText ?? null,
   };
 }
 
-/** สร้างข้อความสรุปสภาพอากาศ */
+/** สร้างข้อความสรุปสภาพอากาศ (รวมฝุ่น PM2.5) */
 function formatWeatherMessage(weather) {
   const now = new Date().toLocaleString('th-TH', {
     timeZone: 'Asia/Bangkok',
@@ -274,12 +324,21 @@ function formatWeatherMessage(weather) {
     timeStyle: 'short',
   });
 
-  return [
+  const lines = [
     `${weather.emoji} อุณหภูมิ ${weather.temp}°C (รู้สึกเหมือน ${weather.feelsLike}°C)`,
     `💧 ความชื้น ${weather.humidity}%`,
     `☁️ สภาพอากาศ: ${weather.description}`,
-    `🕐 อัปเดต: ${now}`,
-  ].join('\n');
+  ];
+
+  if (weather.pm25 != null) {
+    lines.push(`🌫️ PM2.5: ${weather.pm25} µg/m³`);
+  }
+  if (weather.aqi != null && weather.aqiText) {
+    lines.push(`📊 คุณภาพอากาศ: ${weather.aqi}/5 (${weather.aqiText})`);
+  }
+
+  lines.push(`🕐 อัปเดต: ${now}`);
+  return lines.join('\n');
 }
 
 // ========== ตอบกลับข้อความ LINE ==========
@@ -324,7 +383,7 @@ async function handleEvent(event) {
       await saveUsers(users);
       await replyText(
         replyToken,
-        '✅ บันทึกตำแหน่งของคุณเรียบร้อยแล้ว\nจะเริ่มแจ้งอุณหภูมิและความชื้นทุกชั่วโมง\n\nพิมพ์ "หยุด" หรือ "unsubscribe" เมื่อต้องการยกเลิก'
+        '✅ บันทึกตำแหน่งของคุณเรียบร้อยแล้ว\nจะเริ่มแจ้งอุณหภูมิ ความชื้น และค่าฝุ่น PM2.5 ทุกชั่วโมง\n\nพิมพ์ "หยุด" หรือ "unsubscribe" เมื่อต้องการยกเลิก'
       );
     } catch (err) {
       console.error('บันทึกตำแหน่งล้มเหลว:', err.message);

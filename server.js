@@ -10,6 +10,8 @@ const {
   fetchRunScheduleSheet,
   todayInBangkok,
   matchRunnerName,
+  parseRunQuery,
+  dateKeyInCurrentWeek,
 } = require('./googleSheets');
 
 // --- ตรวจว่ามีค่า env ที่จำเป็นครบ ---
@@ -66,11 +68,12 @@ function formatThaiDate(yyyyMmDd) {
   });
 }
 
-/** สร้างข้อความตารางวิ่งคนเดียว (ตอบเมื่อพิมพ์ "<ชื่อ>วิ่ง") */
-function formatRunMessage(dateKey, entry) {
-  const lines = [`🏃 ตารางวิ่งของ ${entry.name} วันนี้ (${formatThaiDate(dateKey)})`];
-  if (entry.task) lines.push(`📋 โจทย์: ${entry.task}`);
+/** สร้างข้อความตารางวิ่งคนเดียว — ลำดับ: ชื่อ → งานวิ่ง → โจทย์ → หมายเหตุ */
+function formatRunMessage(dateKey, entry, dayLabel) {
+  const when = dayLabel ? `วัน${dayLabel}` : 'วันนี้';
+  const lines = [`🏃 ตารางวิ่งของ ${entry.name} ${when} (${formatThaiDate(dateKey)})`];
   if (entry.eventName) lines.push(`🎽 งานวิ่ง: ${entry.eventName}`);
+  if (entry.task) lines.push(`📋 โจทย์: ${entry.task}`);
   if (entry.note) lines.push(`📝 หมายเหตุ: ${entry.note}`);
   return lines.join('\n');
 }
@@ -85,8 +88,8 @@ function formatAllRunnersMessage(dateKey, day) {
   for (const entry of entries) {
     lines.push('');
     lines.push(`👤 ${entry.name}`);
-    if (entry.task) lines.push(`📋 โจทย์: ${entry.task}`);
     if (entry.eventName) lines.push(`🎽 งานวิ่ง: ${entry.eventName}`);
+    if (entry.task) lines.push(`📋 โจทย์: ${entry.task}`);
     if (entry.note) lines.push(`📝 หมายเหตุ: ${entry.note}`);
   }
 
@@ -94,18 +97,13 @@ function formatAllRunnersMessage(dateKey, day) {
 }
 
 /**
- * ลองจับข้อความแบบ "<ชื่อ>วิ่ง"
+ * ลองจับข้อความแบบ "[วัน]<ชื่อ>วิ่ง" เช่น "นิววิ่ง", "ศุกร์นิววิ่ง"
  * คืน { handled: true } ถ้าตอบไปแล้ว
  * คืน { handled: false } ถ้าไม่ใช่คำสั่งวิ่ง หรือชื่อไม่ตรง → ปล่อยให้ handler อื่นจัดการ
  */
 async function tryHandleRunQuery(replyToken, text) {
-  const match = text.trim().match(/^(.+?)\s*วิ่ง\s*$/u);
-  if (!match) {
-    return { handled: false };
-  }
-
-  const queryName = match[1].trim();
-  if (!queryName) {
+  const parsed = parseRunQuery(text);
+  if (!parsed) {
     return { handled: false };
   }
 
@@ -118,22 +116,25 @@ async function tryHandleRunQuery(replyToken, text) {
     return { handled: true };
   }
 
-  const runnerName = matchRunnerName(queryName, sheet.runnerNames);
+  const runnerName = matchRunnerName(parsed.queryName, sheet.runnerNames);
   // ชื่อไม่ตรงรายชื่อในชีท → ไม่ตอบ ปล่อยผ่าน
   if (!runnerName) {
     return { handled: false };
   }
 
-  const dateKey = todayInBangkok();
+  const dateKey =
+    parsed.weekdayDow == null ? todayInBangkok() : dateKeyInCurrentWeek(parsed.weekdayDow);
+  const dayLabel = parsed.weekdayLabel; // null = วันนี้
   const day = sheet.byDate[dateKey];
   const entry = day?.entries?.find((e) => e.name === runnerName);
 
   if (!entry) {
-    await replyText(replyToken, `วันนี้ยังไม่มีตารางวิ่งของ ${runnerName} ครับ 😴`);
+    const when = dayLabel ? `วัน${dayLabel}` : 'วันนี้';
+    await replyText(replyToken, `${when}ยังไม่มีตารางวิ่งของ ${runnerName} ครับ 😴`);
     return { handled: true };
   }
 
-  await replyText(replyToken, formatRunMessage(dateKey, entry));
+  await replyText(replyToken, formatRunMessage(dateKey, entry, dayLabel));
   return { handled: true };
 }
 
@@ -317,7 +318,7 @@ async function handleEvent(event) {
     // มีตำแหน่งแล้ว — ตอบสถานะสั้น ๆ
     await replyText(
       replyToken,
-      'คุณสมัครรับแจ้งเตือนอยู่แล้ว ✓\nจะส่งสรุปอากาศทุกชั่วโมงตามตำแหน่งที่แชร์ไว้\n\nพิมพ์ "หยุด" หากต้องการยกเลิก\nพิมพ์ "<ชื่อ>วิ่ง" เช่น "จ๋าวิ่ง" เพื่อดูตารางวิ่งวันนี้'
+      'คุณสมัครรับแจ้งเตือนอยู่แล้ว ✓\nจะส่งสรุปอากาศทุกชั่วโมงตามตำแหน่งที่แชร์ไว้\n\nพิมพ์ "หยุด" หากต้องการยกเลิก\nพิมพ์ "นิววิ่ง" หรือ "ศุกร์นิววิ่ง" เพื่อดูตารางวิ่ง'
     );
   }
 }

@@ -131,6 +131,71 @@ function todayInBangkok() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
 }
 
+/** ชื่อวันภาษาไทย → getDay() (0=อาทิตย์ … 6=เสาร์) — เรียงจากยาวไปสั้นตอน match */
+const WEEKDAY_ALIASES = [
+  ['พฤหัสบดี', 4],
+  ['พฤหัส', 4],
+  ['อาทิตย์', 0],
+  ['จันทร์', 1],
+  ['อังคาร', 2],
+  ['พุธ', 3],
+  ['ศุกร์', 5],
+  ['เสาร์', 6],
+];
+
+/**
+ * แยกข้อความ "<วัน?><ชื่อ>วิ่ง" เช่น "ศุกร์นิววิ่ง", "วันศุกร์ นิว วิ่ง", "นิววิ่ง"
+ * คืน { weekdayLabel, queryName } หรือ null ถ้าไม่ใช่คำสั่งวิ่ง
+ */
+function parseRunQuery(text) {
+  const trimmed = String(text || '').trim();
+  const base = trimmed.match(/^(.+?)\s*วิ่ง\s*$/u);
+  if (!base) return null;
+
+  let rest = base[1].trim();
+  if (!rest) return null;
+
+  // ตัดคำนำหน้า "วัน" ถ้ามี
+  rest = rest.replace(/^วัน\s*/u, '');
+
+  let weekdayLabel = null;
+  let weekdayDow = null;
+  for (const [label, dow] of WEEKDAY_ALIASES) {
+    if (rest.startsWith(label)) {
+      weekdayLabel = label === 'พฤหัส' ? 'พฤหัสบดี' : label;
+      weekdayDow = dow;
+      rest = rest.slice(label.length).trim();
+      break;
+    }
+  }
+
+  const queryName = rest.trim();
+  if (!queryName) return null;
+
+  return { weekdayLabel, weekdayDow, queryName };
+}
+
+/**
+ * หา YYYY-MM-DD ของวันในสัปดาห์นี้ (จันทร์–อาทิตย์ ตามเวลา Asia/Bangkok)
+ * targetDow: 0=อาทิตย์ … 6=เสาร์
+ */
+function dateKeyInCurrentWeek(targetDow) {
+  const todayKey = todayInBangkok();
+  const today = new Date(`${todayKey}T12:00:00+07:00`);
+  const currentDow = today.getDay();
+
+  // จุดเริ่มสัปดาห์ = จันทร์
+  const daysFromMonday = currentDow === 0 ? 6 : currentDow - 1;
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - daysFromMonday);
+
+  const offsetFromMonday = targetDow === 0 ? 6 : targetDow - 1;
+  const result = new Date(monday);
+  result.setDate(monday.getDate() + offsetFromMonday);
+
+  return result.toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+}
+
 /**
  * จับคู่ชื่อจากข้อความกับรายชื่อในชีท (exact หรือ contains, ไม่สนตัวพิมพ์)
  */
@@ -153,4 +218,6 @@ module.exports = {
   todayInBangkok,
   matchRunnerName,
   normalizeDate,
+  parseRunQuery,
+  dateKeyInCurrentWeek,
 };
